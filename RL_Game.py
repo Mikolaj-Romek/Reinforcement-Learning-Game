@@ -54,16 +54,16 @@ class TileMap:
             "                        ",
             "                        ",
             "                        ",
-            "                             W",
-            "                   PPPPP          W",
-            "                              W",
-            "             PPPPPP           W",
-            "                             W",
-            "       PPPP                  W",
-            "                             W",
-            "                             W",
-            "                             W",
-            "                             W",
+            "                              ",
+            "                   PPPPP      ",
+            "                              ",
+            "             PPPPPP           ",
+            "                              ",
+            "       PPPP                   ",
+            "                              ",
+            "                              ",
+            "                              ",
+            "                              ",
             "GGGGGGGGGGGGGGGGGGGGGGGGGGGGGGG"
         ]
 
@@ -611,7 +611,7 @@ class Enemy(Character):
         for arrow in self.arrow_group:
             if player.alive and not player.shielded and not arrow.stopped and arrow.rect.colliderect(player.rect):
                 knockback_direction = 1 if arrow.direction > 0 else -1
-                player.take_damage(5, knockback_direction)
+                player.take_damage(10, knockback_direction)
                 arrow.kill()
                 hit_player = True
                 if not player.alive:
@@ -744,7 +744,7 @@ class AIPlayer(Player):
 class SARSA:
     def __init__(self, character_type):
         self.character_type = character_type
-        self.epsilon = 0.0
+        self.epsilon = 0
         self.epsilon_decay = 0.999997
         self.epsilon_min = 0.0
         self.alpha = 0.1
@@ -781,7 +781,23 @@ class SARSA:
         q_table_files = glob.glob(f'{self.q_table_folder}/*.json')
         if not q_table_files:
             return {}
-        latest_file = max(q_table_files, key=os.path.getctime)
+        
+        # Extract episode numbers from filenames and find the highest
+        episode_numbers = []
+        for file in q_table_files:
+            try:
+                episode_num = int(file.split('_')[-1].split('.')[0])
+                episode_numbers.append((episode_num, file))
+            except ValueError:
+                continue
+        
+        if not episode_numbers:
+            return {}
+        
+        # Get the file with the highest episode number
+        latest_file = max(episode_numbers, key=lambda x: x[0])[1]
+        print(f"Loading Q-table from: {latest_file}")  # Added for debugging
+        
         with open(latest_file, 'r') as f:
             return json.load(f)
 
@@ -1111,7 +1127,7 @@ class Bird(pygame.sprite.Sprite):
 
     def end_episode(self):
         self.sarsa.end_episode()
-        print(f"Episode {self.sarsa.episode_count} ended. Total Reward: {self.total_reward}")
+        #print(f"Episode {self.sarsa.episode_count} ended. Total Reward: {self.total_reward}")
         print(f"Epsilon: {self.sarsa.epsilon:.6f}, Alpha: {self.sarsa.alpha:.6f}")
         self.total_reward = 0
 
@@ -1924,19 +1940,17 @@ def train_enemy_fast():
 
             if abs(dx) < 150:
                 reward -= 0.1
-            if enemy.rect.left <= 100 or enemy.rect.right >= SCREEN_WIDTH - 100:
-                reward -= 0.1
             if enemy.health < previous_enemy_health:
-                reward -= 50
+                reward -= 40
             if hit_player:
-                reward += 50
+                reward += 60
                 successful_hits += 1
             if killed_player:
-                reward += 100
+                reward += 120
             if enemy.health <= 0:
                 reward -= 100
             if enemy.just_attacked:
-                reward -= 10
+                reward -= 5
                 enemy.just_attacked = False
             episode_reward += reward
 
@@ -3003,132 +3017,443 @@ def test():
     import pandas as pd
     from openpyxl import load_workbook
     import os
-
-    excel_file = 'knight_training_rewards.xlsx'
-    
-    # Load existing data or create new DataFrame
-    if os.path.exists(excel_file):
-        try:
-            df = pd.read_excel(excel_file)
-            # Find the first empty column
-            next_col = len(df.columns)
-            column_name = f'Run_{next_col + 1}'
-        except Exception as e:
-            print(f"Error reading existing Excel file: {e}")
+    for i in range(2):
+        excel_file = 'enemy_training_rewards.xlsx'
+        
+        # Load existing data or create new DataFrame
+        if os.path.exists(excel_file):
+            try:
+                df = pd.read_excel(excel_file)
+                # Find the first empty column
+                next_col = len(df.columns)
+                column_name = f'Run_{next_col + 1}'
+            except Exception as e:
+                print(f"Error reading existing Excel file: {e}")
+                df = pd.DataFrame()
+                column_name = 'Run_1'
+        else:
             df = pd.DataFrame()
             column_name = 'Run_1'
-    else:
-        df = pd.DataFrame()
-        column_name = 'Run_1'
 
-    rewards_list = []  # Store rewards for this run
+        rewards_list = []  # Store rewards for this run
 
-    tile_map = TileMap()
-    knight = Knight(500, SCREEN_HEIGHT - 72)
-    player = AIPlayer(250, SCREEN_HEIGHT - 50)
+        tile_map = TileMap()
+        enemy = Enemy(500, SCREEN_HEIGHT - 50)
+        # enemy.sarsa.q_table = enemy.sarsa.load_q_table()  # Add this line
+        # enemy.sarsa.epsilon = 0  # Set epsilon to 0 for pure exploitation
+        player = AIPlayer(250, SCREEN_HEIGHT - 50)
 
-    num_episodes = 100 
-    frames_per_episode = 30 * 60  # 60 seconds at 60 FPS
-    FULL_RESET_INTERVAL = 50000
+        num_episodes = 100
+        frames_per_episode = 60 * 60  # 30 seconds at 60 FPS
+        FULL_RESET_INTERVAL = 50000
 
-    start_time = time.time()
-    last_epsilon = knight.sarsa.epsilon
-
-    for episode in range(num_episodes):
-        if episode % FULL_RESET_INTERVAL == 0 and episode > 0:
-            last_epsilon = knight.sarsa.epsilon
-            del knight
-            gc.collect()
-            knight = Knight(500, SCREEN_HEIGHT - 72)
-            knight.sarsa.epsilon = last_epsilon
-            print(f"Performed full reset at episode {episode}, continuing with epsilon {last_epsilon:.6f}")
+        start_time = time.time()
         
-        knight.reset()
-        player.reset()
-        frame_count = 0
-        episode_reward = 0
-        
-        while frame_count < frames_per_episode:
-            current_state = knight.get_state(player)
-            action = knight.sarsa.get_action(current_state)
+        for episode in range(num_episodes):
+            if episode % FULL_RESET_INTERVAL == 0 and episode > 0:
+                gc.collect()
+                print(f"Performed full reset at episode {episode}, continuing with epsilon {enemy.sarsa.epsilon:.6f}")
+
+            enemy.reset()
+            player.reset()
+
+            frame_count = 0
+            episode_reward = 0
+            successful_hits = 0
+
+            while frame_count < frames_per_episode:
+                enemy_state = enemy.get_state(player)
+                enemy_action = enemy.sarsa.get_action(enemy_state)
+                enemy.act(enemy_action, tile_map)
+
+                player.make_decision(enemy)
+
+                previous_enemy_health = enemy.health
+
+                player.update(enemy, tile_map)
+                enemy.update(player, tile_map)
+
+                hit_player, killed_player = enemy.check_arrow_hit(player)
+                dx = player.rect.x - enemy.rect.x
+
+                # Calculate reward
+                reward = 0
+
+                if abs(dx) < 150:
+                    reward -= 0.1
+                if enemy.health < previous_enemy_health:
+                    reward -= 40
+                if hit_player:
+                    reward += 60
+                    successful_hits += 1
+                if killed_player:
+                    reward += 120
+                if enemy.health <= 0:
+                    reward -= 100
+                if enemy.just_attacked:
+                    reward -= 5
+                    enemy.just_attacked = False
+                episode_reward += reward
+
+                episode_reward += reward
+
+                # Get next state and action
+                #next_enemy_state = enemy.get_state(player)
+                #next_enemy_action = enemy.sarsa.get_action(next_enemy_state)
+
+                # Update Q-table
+                    # Update Q-table
+                #enemy.sarsa.update_q_table(enemy_state, enemy_action, reward, next_enemy_state, next_enemy_action)
+
+                frame_count += 1
+
+                if not player.alive or not enemy.alive:
+                    break
+
+            enemy.end_episode()
             
-            previous_health = knight.health
-            knight.act(action, player, tile_map)
-            player.update(knight, tile_map)
-            knight.update(player, tile_map)
+            # Add episode reward to rewards list
+            rewards_list.append(episode_reward)
 
-            # Calculate reward
-            dx = player.rect.x - knight.rect.x
+            print(
+                f"Episode {episode + 1}: Reward: {episode_reward:.2f}, Epsilon: {enemy.sarsa.epsilon:.6f}, Successful Hits: {successful_hits}",
+                flush=True)
 
-            reward = 0
-            if knight.just_attacked:
-                reward -= 10
-                knight.just_attacked = False
+            #if (episode + 1) % 1000 == 0:
+            #    enemy.sarsa.save_q_table()
+            #    gc.collect()
 
-            if  abs(dx) > 100:
-                reward -= 0.01
-            if knight.hit_player:
-                reward += 40
-                if knight.killed_player:
-                    reward += 100
-            if knight.health < previous_health:
-                reward -= 40
-            if knight.blocking and knight.shield_used and knight.is_facing_player():
-                reward += 30
-            if knight.health == 0 and not knight.death_penalty_applied:
-                reward -= 100
-                knight.death_penalty_applied = True
-            
-            episode_reward += reward
+        print("Training complete")
+        print(f"Final Epsilon: {enemy.sarsa.epsilon:.6f}")
+        #enemy.sarsa.save_q_table()
+        print(f"episode {enemy.sarsa.episode_count}")
 
-            next_state = knight.get_state(player)
-            next_action = knight.sarsa.get_action(next_state)
-# Update Q-table
-            #knight.sarsa.update_q_table(current_state, action, reward, next_state, next_action)
-
-            frame_count += 1
-
-            if not player.alive or not knight.alive:
-                break
-
-        knight.sarsa.end_episode()
+        # Save rewards to Excel
+        new_df = pd.DataFrame({column_name: rewards_list})
         
-        # Add episode reward to rewards list
-        rewards_list.append(episode_reward)
-        
-        print(f"Episode {episode + 1}: Reward: {episode_reward:.2f}, Epsilon: {knight.sarsa.epsilon:.6f}", flush=True)
-        
-        # if (episode + 1) % 100 == 0:
-        #     knight.sarsa.save_q_table()
-        #     gc.collect()
+        if df.empty:
+            df = new_df
+        else:
+            # Extend shorter DataFrame with NaN values to match the longer one
+            max_length = max(len(df), len(new_df))
+            df = df.reindex(range(max_length))
+            new_df = new_df.reindex(range(max_length))
+            df = pd.concat([df, new_df], axis=1)
 
-    print("Training complete")
-    print(f"Final Epsilon: {knight.sarsa.epsilon:.6f}")
-    #knight.sarsa.save_q_table()
+        # Save to Excel
+        df.to_excel(excel_file, index=False)
+        print(f"Rewards saved to {excel_file}")
 
-    # Save rewards to Excel
-    new_df = pd.DataFrame({column_name: rewards_list})
-    
-    if df.empty:
-        df = new_df
-    else:
-        # Extend shorter DataFrame with NaN values to match the longer one
-        max_length = max(len(df), len(new_df))
-        df = df.reindex(range(max_length))
-        new_df = new_df.reindex(range(max_length))
-        df = pd.concat([df, new_df], axis=1)
-
-    # Save to Excel
-    df.to_excel(excel_file, index=False)
-    print(f"Rewards saved to {excel_file}")
-
-    total_time = (time.time() - start_time) / 60
-    print(f"\nTotal training time: {total_time:.2f} minutes")
+        total_time = (time.time() - start_time) / 60
+        print(f"\nTotal training time: {total_time:.2f} minutes")
 
     gc.collect()
+    
+    import pandas as pd
+    from openpyxl import load_workbook
+    import os
+    for i in range(2):
+        excel_file = 'enemy_training_rewards.xlsx'
+        
+        # Load existing data or create new DataFrame
+        if os.path.exists(excel_file):
+            try:
+                df = pd.read_excel(excel_file)
+                # Find the first empty column
+                next_col = len(df.columns)
+                column_name = f'Run_{next_col + 1}'
+            except Exception as e:
+                print(f"Error reading existing Excel file: {e}")
+                df = pd.DataFrame()
+                column_name = 'Run_1'
+        else:
+            df = pd.DataFrame()
+            column_name = 'Run_1'
 
+        rewards_list = []  # Store rewards for this run
+
+        tile_map = TileMap()
+        enemy = Enemy(500, SCREEN_HEIGHT - 50)
+        # enemy.sarsa.q_table = enemy.sarsa.load_q_table()  # Add this line
+        # enemy.sarsa.epsilon = 0  # Set epsilon to 0 for pure exploitation
+        player = AIPlayer(250, SCREEN_HEIGHT - 50)
+
+        num_episodes = 100
+        frames_per_episode = 60 * 60  # 30 seconds at 60 FPS
+        FULL_RESET_INTERVAL = 50000
+
+        start_time = time.time()
+        
+        for episode in range(num_episodes):
+            if episode % FULL_RESET_INTERVAL == 0 and episode > 0:
+                gc.collect()
+                print(f"Performed full reset at episode {episode}, continuing with epsilon {enemy.sarsa.epsilon:.6f}")
+
+            enemy.reset()
+            player.reset()
+
+            frame_count = 0
+            episode_reward = 0
+            successful_hits = 0
+
+            while frame_count < frames_per_episode:
+                enemy_state = enemy.get_state(player)
+                enemy_action = enemy.sarsa.get_action(enemy_state)
+                enemy.act(enemy_action, tile_map)
+
+                player.make_decision(enemy)
+
+                previous_enemy_health = enemy.health
+
+                player.update(enemy, tile_map)
+                enemy.update(player, tile_map)
+
+                hit_player, killed_player = enemy.check_arrow_hit(player)
+                dx = player.rect.x - enemy.rect.x
+
+                # Calculate reward
+                reward = 0
+
+                if abs(dx) < 150:
+                    reward -= 0.1
+                if enemy.health < previous_enemy_health:
+                    reward -= 40
+                if hit_player:
+                    reward += 60
+                    successful_hits += 1
+                if killed_player:
+                    reward += 120
+                if enemy.health <= 0:
+                    reward -= 100
+                if enemy.just_attacked:
+                    reward -= 5
+                    enemy.just_attacked = False
+                episode_reward += reward
+
+                episode_reward += reward
+
+                # Get next state and action
+                #next_enemy_state = enemy.get_state(player)
+                #next_enemy_action = enemy.sarsa.get_action(next_enemy_state)
+
+                # Update Q-table
+                    # Update Q-table
+                #enemy.sarsa.update_q_table(enemy_state, enemy_action, reward, next_enemy_state, next_enemy_action)
+
+                frame_count += 1
+
+                if not player.alive or not enemy.alive:
+                    break
+
+            enemy.end_episode()
+            
+            # Add episode reward to rewards list
+            rewards_list.append(episode_reward)
+
+            print(
+                f"Episode {episode + 1}: Reward: {episode_reward:.2f}, Epsilon: {enemy.sarsa.epsilon:.6f}, Successful Hits: {successful_hits}",
+                flush=True)
+
+            #if (episode + 1) % 1000 == 0:
+            #    enemy.sarsa.save_q_table()
+            #    gc.collect()
+
+        print("Training complete")
+        print(f"Final Epsilon: {enemy.sarsa.epsilon:.6f}")
+        #enemy.sarsa.save_q_table()
+        print(f"episode {enemy.sarsa.episode_count}")
+
+        # Save rewards to Excel
+        new_df = pd.DataFrame({column_name: rewards_list})
+        
+        if df.empty:
+            df = new_df
+        else:
+            # Extend shorter DataFrame with NaN values to match the longer one
+            max_length = max(len(df), len(new_df))
+            df = df.reindex(range(max_length))
+            new_df = new_df.reindex(range(max_length))
+            df = pd.concat([df, new_df], axis=1)
+
+        # Save to Excel
+        df.to_excel(excel_file, index=False)
+        print(f"Rewards saved to {excel_file}")
+
+        total_time = (time.time() - start_time) / 60
+        print(f"\nTotal training time: {total_time:.2f} minutes")
+    gc.collect()
+
+
+
+    
+def test_bird():
+    import pandas as pd
+    from openpyxl import load_workbook
+    import os
+    for j in range(1):
+        for i in range (2):
+            excel_file = 'bird_training_rewards.xlsx'
+            
+            # Load existing data or create new DataFrame
+            if os.path.exists(excel_file):
+                try:
+                    df = pd.read_excel(excel_file)
+                    # Find the first empty column
+                    next_col = len(df.columns)
+                    column_name = f'Run_{next_col + 1}'
+                except Exception as e:
+                    print(f"Error reading existing Excel file: {e}")
+                    df = pd.DataFrame()
+                    column_name = 'Run_1'
+            else:
+                df = pd.DataFrame()
+                column_name = 'Run_1'
+
+            rewards_list = []  # Store rewards for this run
+
+            tile_map = TileMap()
+            bird = Bird(400, SCREEN_HEIGHT - 100)
+            player = AIPlayer(250, SCREEN_HEIGHT - 50)
+            knight = Knight(500, SCREEN_HEIGHT - 72)
+            enemy = Enemy(600, SCREEN_HEIGHT - 50)
+
+            knight.sarsa.epsilon_min = 0
+            knight.sarsa.epsilon = 0
+            enemy.sarsa.epsilon_min = 0
+            enemy.sarsa.epsilon = 0
+            
+            knight.sarsa.q_table = knight.sarsa.load_q_table()
+            with open(f"C:\\Users\\mikol\\Desktop\\Reinforcement Learning\\bird_q_tables\\q_table_episode_{1000}.json", 'r') as f:
+                bird.sarsa.q_table = json.load(f)
+            enemy.sarsa.q_table = enemy.sarsa.load_q_table()
+            # = bird.sarsa.load_q_table()
+            
+            num_episodes = 100
+            frames_per_episode = 30 * 60
+            FULL_RESET_INTERVAL = 1000
+
+            start_time = time.time()
+        
+            for episode in range(num_episodes):
+                print(f"Episode {j+episode}")
+                if episode % FULL_RESET_INTERVAL == 0 and episode > 0:
+                    gc.collect()
+                    print(f"Performed full reset at episode {episode}, continuing with epsilon {bird.sarsa.epsilon:.6f}")
+                
+                bird.reset()
+                player.reset()
+                player.reset_shield()
+                knight.reset()
+                enemy.reset()
+                
+                frame_count = 0
+                episode_reward = 0
+                
+                while frame_count < frames_per_episode:
+                    # Knight's turn (using best action, not training)
+                    knight_state = knight.get_state(player)
+                    knight_action = knight.sarsa.get_best_action(knight_state)
+                    knight.act(knight_action, player, tile_map)
+                    
+                    # Enemy's turn (using best action, not training)
+                    enemy_state = enemy.get_state(player)
+                    enemy_action = enemy.sarsa.get_best_action(enemy_state)
+                    enemy.act(enemy_action, tile_map)
+                    
+                    # Player's turn
+                    if knight.health > 0 :
+                        player.make_decision(knight)
+                    else:
+                        player.make_decision(enemy)
+                    
+                    # Bird's turn
+                    bird_state = bird.get_state(player, knight=knight, enemy=enemy)
+                    bird_action = bird.sarsa.get_action(bird_state)
+                    bird.perform_action(bird_action, player)
+                    
+                    # Update all entities
+                    if knight.health > 0:
+                        
+                        player.update(knight, tile_map)
+                    else:
+                        player.update(enemy, tile_map)
+                    knight.update(player, tile_map)
+                    enemy.update(player, tile_map)
+                    bird.update(player, knight=knight, enemy=enemy)
+                    
+                    # Check for arrow hits
+                    enemy.check_arrow_hit(player)
+                    
+                    # Check for player's attack hitting enemy or knight
+                    if player.attacking and not player.has_hit_enemy:
+                        if (abs(player.rect.centerx - enemy.rect.centerx) < player.attack_range and
+                            abs(player.rect.centery - enemy.rect.centery) < 50):
+                            knockback_direction = 1 if player.facing_right else -1
+                            enemy.take_damage(10, knockback_direction)
+                            player.has_hit_enemy = True
+                        elif (abs(player.rect.centerx - knight.rect.centerx) < player.attack_range and
+                            abs(player.rect.centery - knight.rect.centery) < 50):
+                            knockback_direction = 1 if player.facing_right else -1
+                            knight.take_damage(10, knockback_direction)
+                            player.has_hit_enemy = True
+
+                    # Check for knight's attack hitting player
+                    knight.check_melee_hit(player)
+                    
+                    # Calculate reward
+                    reward = bird.get_reward(player, knight=knight, enemy=enemy)
+                    episode_reward += reward
+
+                    # Get next state and action for SARSA update
+                    next_bird_state = bird.get_state(player, knight=knight, enemy=enemy)
+                    next_bird_action = bird.sarsa.get_action(next_bird_state)
+
+                    # Update Q-table for bird only
+                    #bird.sarsa.update_q_table(bird_state, bird_action, reward, next_bird_state, next_bird_action)
+
+                    frame_count += 1
+
+                    if not player.alive or (not knight.alive and not enemy.alive):
+                        break
+
+                bird.end_episode()
+                
+                # Add episode reward to rewards list
+                rewards_list.append(episode_reward)
+                
+                #if (episode + 1) % 1000 == 0:
+                #    bird.sarsa.save_q_table()
+                #    gc.collect()
+
+                print(f"Episode {episode + 1}: Reward: {episode_reward:.2f}, Bird Epsilon: {bird.sarsa.epsilon:.6f}", flush=True)
+
+            print("Training complete")
+            print(f"Final Epsilon: {bird.sarsa.epsilon:.6f}")
+            #bird.sarsa.save_q_table()
+
+            # Save rewards to Excel
+            new_df = pd.DataFrame({column_name: rewards_list})
+            
+            if df.empty:
+                df = new_df
+            else:
+                # Extend shorter DataFrame with NaN values to match the longer one
+                max_length = max(len(df), len(new_df))
+                df = df.reindex(range(max_length))
+                new_df = new_df.reindex(range(max_length))
+                df = pd.concat([df, new_df], axis=1)
+
+            # Save to Excel
+            df.to_excel(excel_file, index=False)
+            print(f"Rewards saved to {excel_file}")
+
+            total_time = (time.time() - start_time) / 60
+            print(f"\nTotal training time: {total_time:.2f} minutes")
+
+            gc.collect()
 if __name__ == "__main__":
-    test()
+    #test()
+    #test_bird()
     #test_knight_performance()
     # Uncomment the function you want to run
     #show_map()
@@ -3145,7 +3470,7 @@ if __name__ == "__main__":
     #visualize_bird_and_enemy_training()
     
     #train_bird_with_knight_and_enemy_fast()
-    #visualize_bird_knight_and_enemy_training()
+    visualize_bird_knight_and_enemy_training()
 
 
     #train_knight_with_simple_player()
